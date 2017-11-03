@@ -1,6 +1,7 @@
 ----------------------------------------------------------------------------------
 -- Engineer:  Phillip Slawinski
 -- 
+-- Modified Date: 03.11.2017.
 -- Create Date:    17:48:01 11/20/2016 
 -- Design Name:    
 -- Module Name:    top - Behavioral 
@@ -149,6 +150,12 @@ architecture Behavioral of top is
 	
 	-- OCD registers
 	signal ocd_tripped : std_logic := '0';
+	signal ocd_latched : std_logic := '0';
+		
+	-- Interrupter signal LED latch signals and time (units of start_osc)
+	constant led_latch_cycles : positive := 63;
+	signal led_latch_count: integer range 0 to led_latch_cycles;
+	signal sig_led_output_latched: std_logic := '0';
 		
 	-- Indicates that the start cycles are active
 	signal start_cycles_active : boolean;
@@ -161,6 +168,7 @@ architecture Behavioral of top is
 	
 	-- PWL Select mode (disabled by default);
 	signal pwl_test : std_logic;
+	
 begin
 		
 	-- Startup clocks configured (via switch)
@@ -178,14 +186,13 @@ begin
 		if start_clocks_cfg = "0000" then
 			pwl_test <= '1';
 			pw_o <= int;
+			tp2_o <= not pw_i and int;
 		else
 			pw_o <= interrupter; 
 			pwl_test <= '0';
+			tp2_o <= '0';
 		end if;
 	end process;
-	
-	-- Output pw limiter signal
-	tp2_o <= not pw_i and int;
 	
 	-- Run oscillator
 	osc_o <= not osc_i; -- XC2C64A
@@ -324,6 +331,40 @@ begin
 		end if;
 	end process;
 	
+	-- Latch OCD trip for LED
+	process (interrupter, ocd_tripped)
+	begin
+		if ocd_tripped = '1' then
+			ocd_latched <= '1';
+		else 
+			if rising_edge(interrupter) then
+				-- Clear OCD
+				ocd_latched <= '0';
+			end if;
+		end if;
+	end process;
+
+	-- Indicate that the coil is freewheeling/fault present
+	fault_o <= freewheeling or fb_fault or fatal_fault or pw_limit_exceeded or ocd_interrupter_disable or ocd_latched;
+
+	-- Extend interrupter signal LED period by led_latch_cycles of start_osc
+	process (start_osc, interrupter)
+	begin
+		if interrupter = '1' then
+			led_latch_count <= led_latch_cycles;
+			sig_led_output_latched <= '1';
+		elsif rising_edge(start_osc) then
+			if led_latch_count > 0 then
+				led_latch_count <= led_latch_count - 1;
+			else
+				sig_led_output_latched <= '0';
+			end if;
+		end if;
+	end process;
+	
+	-- Indicate the interrupter status
+	mod_o <= interrupter or sig_led_output_latched;
+	
 	-- Generate gate drive signals
 	process (fb_sig, ocd_i, int, zcd_i)
 	begin		
@@ -378,12 +419,7 @@ begin
 	-- Set gate drive outputs
 	process (freewheeling, interrupter, fw_target, fb_sig, pw_i, dip_sw_i, ocd_interrupter_disable, fb_fault, pw_limit_exceeded, fatal_fault)
 	begin
-		-- Indicate that the coil is freewheeling
-		fault_o <= freewheeling or fb_fault or fatal_fault or pw_limit_exceeded or ocd_interrupter_disable;
-		
-		-- Indicate the interrupter status
-		mod_o <= interrupter;
-	
+
 		-- Set GDT outputs
 		if fatal_fault = '0' and interrupter = '1' and pw_limit_exceeded = '0' and ocd_interrupter_disable = '0' then
 			if freewheeling = '1' then -- freewheeling, alternate sides of the bridge to turn off
